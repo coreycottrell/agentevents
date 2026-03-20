@@ -1,0 +1,379 @@
+openapi: 3.0.3
+info:
+  title: AgentEvents API
+  description: |
+    Pub/sub event bus for CivOS agents. Subscribe to event types, receive
+    notifications via webhook or polling. At-least-once delivery guaranteed.
+  version: 0.1.0
+  contact:
+    name: CivOS Protocol Stack
+    url: https://github.com/coreycottrell/civis-protocol
+
+servers:
+  - url: http://localhost:8400
+    description: Local development
+  - url: https://events.civis.dev
+    description: Production (planned)
+
+security:
+  - AgentAuth: []
+
+paths:
+  /subscriptions:
+    post:
+      operationId: createSubscription
+      summary: Subscribe to an event type
+      description: |
+        Create a subscription to receive events of a specific type. Provide a
+        callback_url for webhook delivery, or omit it to use polling mode.
+        Wildcard subscriptions are supported (e.g., `entity.*`).
+      tags:
+        - subscriptions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscriptionCreate'
+            examples:
+              webhook:
+                summary: Webhook subscription
+                value:
+                  event_type: "entity.created"
+                  callback_url: "https://my-agent.civis.dev/hooks/entity-created"
+              polling:
+                summary: Polling subscription (no callback URL)
+                value:
+                  event_type: "ledger.transfer"
+              wildcard:
+                summary: Wildcard subscription
+                value:
+                  event_type: "entity.*"
+                  callback_url: "https://my-agent.civis.dev/hooks/entity-events"
+      responses:
+        '201':
+          description: Subscription created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+        '400':
+          description: Invalid event type or callback URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Duplicate subscription (same agent, event type, and callback)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    get:
+      operationId: listSubscriptions
+      summary: List my subscriptions
+      description: List all active subscriptions for the authenticated agent.
+      tags:
+        - subscriptions
+      responses:
+        '200':
+          description: List of subscriptions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionList'
+        '401':
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /subscriptions/{id}:
+    delete:
+      operationId: deleteSubscription
+      summary: Unsubscribe
+      description: Delete a subscription. Only the owning agent can unsubscribe.
+      tags:
+        - subscriptions
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Subscription deleted
+        '401':
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Not authorized to delete this subscription
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Subscription not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /events:
+    post:
+      operationId: publishEvent
+      summary: Publish an event
+      description: |
+        Publish an event to the bus. All matching subscribers will be notified.
+        Restricted to authorized services (HUB, Ledger, etc.) and admin agents.
+      tags:
+        - events
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventCreate'
+            example:
+              type: "entity.created"
+              source: "agenthub"
+              payload:
+                entity_id: "550e8400-e29b-41d4-a716-446655440000"
+                entity_type: "agent"
+                name: "research-lead"
+      responses:
+        '201':
+          description: Event published and queued for delivery
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Event'
+        '400':
+          description: Invalid event type or payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Not authorized to publish events
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    get:
+      operationId: pollEvents
+      summary: Poll for events
+      description: |
+        Poll for undelivered events matching the authenticated agent's subscriptions.
+        Returns events that have not yet been acknowledged. Use `after` parameter
+        for cursor-based pagination. Events are returned oldest-first.
+      tags:
+        - events
+      parameters:
+        - name: type
+          in: query
+          required: false
+          description: Filter by event type
+          schema:
+            type: string
+          example: "entity.created"
+        - name: after
+          in: query
+          required: false
+          description: Return events created after this event ID (cursor pagination)
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of events to return
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 200
+      responses:
+        '200':
+          description: List of undelivered events
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventList'
+        '401':
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /events/{id}:
+    get:
+      operationId: getEvent
+      summary: Get a specific event
+      description: Retrieve a single event by its ID.
+      tags:
+        - events
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Event found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Event'
+        '401':
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Event not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  securitySchemes:
+    AgentAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: AgentAUTH Ed25519 JWT token
+
+  schemas:
+    SubscriptionCreate:
+      type: object
+      required:
+        - event_type
+      properties:
+        event_type:
+          type: string
+          description: |
+            Event type to subscribe to. Supports exact match (e.g., `entity.created`)
+            or wildcard (e.g., `entity.*`).
+          example: "entity.created"
+        callback_url:
+          type: string
+          format: uri
+          description: |
+            URL to receive webhook POST deliveries. If omitted, the subscription
+            operates in polling mode (use GET /events to retrieve).
+          example: "https://my-agent.civis.dev/hooks/entity-created"
+
+    Subscription:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          description: ID of the subscribing agent (from JWT)
+        event_type:
+          type: string
+        callback_url:
+          type: string
+          format: uri
+          nullable: true
+        active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    SubscriptionList:
+      type: object
+      properties:
+        subscriptions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Subscription'
+        total:
+          type: integer
+
+    EventCreate:
+      type: object
+      required:
+        - type
+        - source
+        - payload
+      properties:
+        type:
+          type: string
+          description: Event type (e.g., `entity.created`, `ledger.transfer`)
+          example: "entity.created"
+        source:
+          type: string
+          description: Service or agent that produced the event
+          example: "agenthub"
+        payload:
+          type: object
+          additionalProperties: true
+          description: Event-specific data
+
+    Event:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+        source:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+
+    EventList:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/Event'
+        total:
+          type: integer
+          description: Total undelivered events matching the filter
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error code
+        message:
+          type: string
+          description: Human-readable error message
