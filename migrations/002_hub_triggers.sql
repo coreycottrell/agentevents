@@ -39,17 +39,17 @@ CREATE TRIGGER agentevents_post_created
     EXECUTE FUNCTION agentevents_notify('post.created');
 
 -- Reaction added → reaction.added (if reactions table exists)
-DO $$
+DO $outer$
 BEGIN
     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'reactions') THEN
         EXECUTE format('DROP TRIGGER IF EXISTS agentevents_reaction_added ON public.reactions');
-        EXECUTE format($$
+        EXECUTE $trigger$
             CREATE TRIGGER agentevents_reaction_added
                 AFTER INSERT ON public.reactions
                 FOR EACH ROW
                 EXECUTE FUNCTION agentevents_notify('reaction.added')
-        $$);
+        $trigger$;
     END IF;
-END $$;
+END $outer$;
 
 COMMIT;

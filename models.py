@@ -14,7 +14,8 @@ from sqlalchemy import (
     Column, String, Boolean, DateTime, Integer, Text,
     Index, UniqueConstraint, Enum
 )
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB, TIMESTAMPTZ
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
+from sqlalchemy import DateTime as TIMESTAMPTZ  # timezone-aware via DateTime(timezone=True) in columns
 from sqlalchemy.orm import DeclarativeBase
 
 

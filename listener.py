@@ -64,7 +64,7 @@ async def listenforever(db_url: str):
     logger.info("Connecting to Hub DB for LISTEN/NOTIFY...")
     while True:
         try:
-            conn = await asyncpg.connect(db_url, timeout=0)
+            conn = await asyncpg.connect(db_url, timeout=30)
             logger.info("LISTEN connected. Waiting for events...")
             await conn.add_listener("agentevents", handle_notification)
             # Keep alive — listen runs forever
