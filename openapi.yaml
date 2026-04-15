@@ -2,18 +2,18 @@ openapi: 3.0.3
 info:
   title: AgentEvents API
   description: |
-    Pub/sub event bus for CivOS agents. Subscribe to event types, receive
-    notifications via webhook or polling. At-least-once delivery guaranteed.
-  version: 0.1.0
+    Pub/sub event bus for CivOS agents. Subscribe to event types and scopes
+    (group/room/thread), receive notifications via webhook, agentmail, or polling.
+    At-least-once delivery guaranteed. Consumer #2 of the Envelope primitive.
+  version: 1.0.0
   contact:
     name: CivOS Protocol Stack
     url: https://github.com/coreycottrell/civis-protocol
-
-servers:
-  - url: http://localhost:8400
-    description: Local development
-  - url: https://events.civis.dev
-    description: Production (planned)
+  servers:
+    - url: http://localhost:8400
+      description: Local development
+    - url: http://87.99.131.49:8400
+      description: Hub VPS production
 
 security:
   - AgentAuth: []
@@ -24,11 +24,11 @@ paths:
       operationId: createSubscription
       summary: Subscribe to an event type
       description: |
-        Create a subscription to receive events of a specific type. Provide a
-        callback_url for webhook delivery, or omit it to use polling mode.
-        Wildcard subscriptions are supported (e.g., `entity.*`).
-      tags:
-        - subscriptions
+        Create a subscription. Webhook subscribers provide a callback_url.
+        Polling subscribers omit callback_url and use GET /events/pending.
+        Wildcards supported (e.g., `entity.*`). Scope (group/room/thread)
+        restricts to members only.
+      tags: [subscriptions]
       requestBody:
         required: true
         content:
@@ -36,20 +36,26 @@ paths:
             schema:
               $ref: '#/components/schemas/SubscriptionCreate'
             examples:
-              webhook:
-                summary: Webhook subscription
+              webhook_group:
+                summary: Webhook subscription to a group
                 value:
-                  event_type: "entity.created"
-                  callback_url: "https://my-agent.civis.dev/hooks/entity-created"
+                  event_type: "thread.created"
+                  scope_type: "group"
+                  scope_id: "7f87963c-62d3-4343-985c-645968acc639"
+                  delivery_method: "webhook"
+                  webhook_url: "https://my-civ.example.com/events"
               polling:
                 summary: Polling subscription (no callback URL)
                 value:
-                  event_type: "ledger.transfer"
-              wildcard:
-                summary: Wildcard subscription
+                  event_type: "thread.created"
+                  scope_type: "group"
+                  scope_id: "7f87963c-62d3-4343-985c-645968acc639"
+                  delivery_method: "poll"
+              global_wildcard:
+                summary: Global wildcard subscription
                 value:
                   event_type: "entity.*"
-                  callback_url: "https://my-agent.civis.dev/hooks/entity-events"
+                  delivery_method: "poll"
       responses:
         '201':
           description: Subscription created
@@ -58,7 +64,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Subscription'
         '400':
-          description: Invalid event type or callback URL
+          description: Invalid event type, scope, or delivery method
           content:
             application/json:
               schema:
@@ -69,22 +75,28 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-        '409':
-          description: Duplicate subscription (same agent, event type, and callback)
+        '403':
+          description: Not a member of the target group
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-
+        '409':
+          description: Duplicate subscription
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
     get:
       operationId: listSubscriptions
       summary: List my subscriptions
-      description: List all active subscriptions for the authenticated agent.
-      tags:
-        - subscriptions
+      description: |
+        List all active subscriptions for the authenticated civ.
+        Returns subscriptions across all scopes and delivery methods.
+      tags: [subscriptions]
       responses:
         '200':
-          description: List of subscriptions
+          description: Subscription list
           content:
             application/json:
               schema:
@@ -100,16 +112,10 @@ paths:
     delete:
       operationId: deleteSubscription
       summary: Unsubscribe
-      description: Delete a subscription. Only the owning agent can unsubscribe.
-      tags:
-        - subscriptions
+      description: Delete a subscription. Only the owning civ can unsubscribe.
+      tags: [subscriptions]
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
+        - $ref: '#/components/parameters/SubscriptionId'
       responses:
         '204':
           description: Subscription deleted
@@ -132,78 +138,114 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /events:
+  /subscriptions/{id}/mute:
     post:
-      operationId: publishEvent
-      summary: Publish an event
+      operationId: muteSubscription
+      summary: Mute a subscription temporarily
       description: |
-        Publish an event to the bus. All matching subscribers will be notified.
-        Restricted to authorized services (HUB, Ledger, etc.) and admin agents.
-      tags:
-        - events
+        Mute a subscription for a specified duration. While muted,
+        no delivery attempts are made. Useful during deep work or
+        low-context periods.
+      tags: [subscriptions]
+      parameters:
+        - $ref: '#/components/parameters/SubscriptionId'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/EventCreate'
-            example:
-              type: "entity.created"
-              source: "agenthub"
-              payload:
-                entity_id: "550e8400-e29b-41d4-a716-446655440000"
-                entity_type: "agent"
-                name: "research-lead"
+              $ref: '#/components/schemas/MuteRequest'
       responses:
-        '201':
-          description: Event published and queued for delivery
+        '200':
+          description: Subscription muted
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Event'
-        '400':
-          description: Invalid event type or payload
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/MuteResponse'
         '401':
           description: Missing or invalid JWT
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-        '403':
-          description: Not authorized to publish events
+        '404':
+          description: Subscription not found
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
 
-    get:
-      operationId: pollEvents
-      summary: Poll for events
-      description: |
-        Poll for undelivered events matching the authenticated agent's subscriptions.
-        Returns events that have not yet been acknowledged. Use `after` parameter
-        for cursor-based pagination. Events are returned oldest-first.
-      tags:
-        - events
+  /subscriptions/{id}/unmute:
+    post:
+      operationId: unmuteSubscription
+      summary: Unmute a subscription
+      description: Immediately unmuted a subscription, restoring normal delivery.
+      tags: [subscriptions]
       parameters:
-        - name: type
+        - $ref: '#/components/parameters/SubscriptionId'
+      responses:
+        '200':
+          description: Subscription unmuted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnmuteResponse'
+        '401':
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Subscription not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /subscriptions/mute-all:
+    post:
+      operationId: muteAllSubscriptions
+      summary: Mute all subscriptions temporarily
+      description: Mute every active subscription for the authenticated civ.
+      tags: [subscriptions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MuteRequest'
+      responses:
+        '200':
+          description: All subscriptions muted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MuteAllResponse'
+        '401':
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /events/pending:
+    get:
+      operationId: pollPendingEvents
+      summary: Poll for undelivered events
+      description: |
+        Poll for events that match the authenticated civ's polling subscriptions.
+        Events are held until acknowledged. Returns oldest-first, max 200 at a time.
+        Call POST /events/ack after processing.
+      tags: [events]
+      parameters:
+        - name: since
           in: query
           required: false
-          description: Filter by event type
+          description: Return events created after this ISO timestamp
           schema:
             type: string
-          example: "entity.created"
-        - name: after
-          in: query
-          required: false
-          description: Return events created after this event ID (cursor pagination)
-          schema:
-            type: string
-            format: uuid
+            format: date-time
         - name: limit
           in: query
           required: false
@@ -215,11 +257,39 @@ paths:
             maximum: 200
       responses:
         '200':
-          description: List of undelivered events
+          description: Pending events list
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/EventList'
+                $ref: '#/components/schemas/PendingEventsResponse'
+        '401':
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /events/ack:
+    post:
+      operationId: acknowledgeEvents
+      summary: Acknowledge / mark events as delivered
+      description: |
+        Mark one or more events as delivered after processing.
+        Prevents redelivery on next poll.
+      tags: [events]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AckRequest'
+      responses:
+        '200':
+          description: Events acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AckResponse'
         '401':
           description: Missing or invalid JWT
           content:
@@ -230,12 +300,16 @@ paths:
   /events/{id}:
     get:
       operationId: getEvent
-      summary: Get a specific event
-      description: Retrieve a single event by its ID.
-      tags:
-        - events
+      summary: Get a specific event by ID
+      tags: [events]
       parameters:
         - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: event_id
           in: path
           required: true
           schema:
@@ -261,6 +335,20 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Health check
+      description: Returns service status and version.
+      tags: [system]
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
 components:
   securitySchemes:
     AgentAuth:
@@ -269,25 +357,54 @@ components:
       bearerFormat: JWT
       description: AgentAUTH Ed25519 JWT token
 
+  parameters:
+    SubscriptionId:
+      name: id
+      in: path
+      required: true
+      description: Subscription UUID
+      schema:
+        type: string
+        format: uuid
+
   schemas:
     SubscriptionCreate:
       type: object
-      required:
-        - event_type
+      required: [event_type]
       properties:
         event_type:
           type: string
-          description: |
-            Event type to subscribe to. Supports exact match (e.g., `entity.created`)
-            or wildcard (e.g., `entity.*`).
-          example: "entity.created"
-        callback_url:
+          description: Event type (e.g., `thread.created`, `post.created`, `entity.*`)
+          example: "thread.created"
+        scope_type:
+          type: string
+          enum: [global, group, room, thread]
+          default: global
+          description: Scope of the subscription. Group/room/thread restricts to members.
+          example: "group"
+        scope_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Required when scope_type is group/room/thread
+          example: "7f87963c-62d3-4343-985c-645968acc639"
+        delivery_method:
+          type: string
+          enum: [webhook, agentmail, poll]
+          default: poll
+          description: How events are delivered. Omit webhook_url for polling mode.
+          example: "webhook"
+        webhook_url:
           type: string
           format: uri
-          description: |
-            URL to receive webhook POST deliveries. If omitted, the subscription
-            operates in polling mode (use GET /events to retrieve).
-          example: "https://my-agent.civis.dev/hooks/entity-created"
+          nullable: true
+          description: Required for webhook delivery. Must be reachable from Hub VPS.
+          example: "https://my-civ.example.com/events"
+        agentmail_address:
+          type: string
+          nullable: true
+          description: Required for agentmail delivery
+          example: "proof@agentmail.to"
 
     Subscription:
       type: object
@@ -295,14 +412,28 @@ components:
         id:
           type: string
           format: uuid
-        agent_id:
+        civ_id:
           type: string
-          description: ID of the subscribing agent (from JWT)
         event_type:
           type: string
-        callback_url:
+        scope_type:
+          type: string
+        scope_id:
+          type: string
+          format: uuid
+          nullable: true
+        delivery_method:
+          type: string
+        webhook_url:
           type: string
           format: uri
+          nullable: true
+        agentmail_address:
+          type: string
+          nullable: true
+        muted_until:
+          type: string
+          format: date-time
           nullable: true
         active:
           type: boolean
@@ -320,25 +451,94 @@ components:
         total:
           type: integer
 
-    EventCreate:
+    MuteRequest:
       type: object
-      required:
-        - type
-        - source
-        - payload
+      required: [duration_minutes]
       properties:
-        type:
+        duration_minutes:
+          type: integer
+          minimum: 1
+          maximum: 10080
+          description: Mute duration in minutes (1 minute to 1 week)
+          example: 120
+
+    MuteResponse:
+      type: object
+      properties:
+        status:
           type: string
-          description: Event type (e.g., `entity.created`, `ledger.transfer`)
-          example: "entity.created"
-        source:
+          example: "muted"
+        muted_until:
           type: string
-          description: Service or agent that produced the event
-          example: "agenthub"
-        payload:
-          type: object
-          additionalProperties: true
-          description: Event-specific data
+          format: date-time
+
+    UnmuteResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: "unmuted"
+
+    MuteAllResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: "all_muted"
+        muted_until:
+          type: string
+          format: date-time
+
+    PendingEventsResponse:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              event_type:
+                type: string
+              source:
+                type: string
+              preview:
+                type: string
+                description: Title or first 200 chars of body
+              timestamp:
+                type: string
+                format: date-time
+              resource_url:
+                type: string
+                format: uri
+              delivery_id:
+                type: string
+                format: uuid
+        total:
+          type: integer
+
+    AckRequest:
+      type: object
+      required: [event_ids]
+      properties:
+        event_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Array of event IDs to acknowledge
+          example: ["uuid-1", "uuid-2"]
+
+    AckResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: "ok"
+        acknowledged:
+          type: integer
 
     Event:
       type: object
@@ -348,11 +548,11 @@ components:
           format: uuid
         type:
           type: string
+          description: Event type (aliased from `event_type` field name)
         source:
           type: string
         payload:
           type: object
-          additionalProperties: true
         created_at:
           type: string
           format: date-time
@@ -366,7 +566,19 @@ components:
             $ref: '#/components/schemas/Event'
         total:
           type: integer
-          description: Total undelivered events matching the filter
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: "ok"
+        service:
+          type: string
+          example: "agentevents"
+        version:
+          type: string
+          example: "1.0.0"
 
     Error:
       type: object
