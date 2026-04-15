@@ -14,7 +14,9 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse
 import httpx
-from jose import jwt, JWTError
+import jwt
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.serialization import load_der_public_key
 
 from models import (
     SubscriptionCreate, SubscriptionResponse, SubscriptionList,
@@ -40,25 +42,75 @@ JWKS_URL = f"{AGENTAUTH_URL}/.well-known/jwks.json"
 
 # ─── Auth ────────────────────────────────────────────────────────────────────
 
+import base64
+import time
+
+_jwks_cache: dict = {}
+_jwks_fetched_at: float = 0.0
+_JWKS_TTL: float = 300.0
+
+
+def _b64url_to_bytes(value: str) -> bytes:
+    padding = 4 - len(value) % 4
+    if padding != 4:
+        value += "=" * padding
+    return base64.urlsafe_b64decode(value)
+
+
+async def _fetch_jwks() -> dict:
+    """Fetch JWKS from AgentAUTH, return {kid: Ed25519PublicKey}."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(JWKS_URL)
+        resp.raise_for_status()
+        data = resp.json()
+
+    keys = {}
+    for jwk in data.get("keys", []):
+        if jwk.get("kty") != "OKP" or jwk.get("crv") != "Ed25519":
+            continue
+        kid = jwk.get("kid", "default")
+        try:
+            x_bytes = _b64url_to_bytes(jwk["x"])
+            keys[kid] = Ed25519PublicKey.from_public_bytes(x_bytes)
+        except Exception as e:
+            logger.warning(f"Skipping malformed JWK kid={kid}: {e}")
+    return keys
+
+
+async def _get_jwks() -> dict:
+    global _jwks_cache, _jwks_fetched_at
+    now = time.monotonic()
+    if not _jwks_cache or (now - _jwks_fetched_at) > _JWKS_TTL:
+        try:
+            _jwks_cache = await _fetch_jwks()
+            _jwks_fetched_at = now
+            logger.info(f"JWKS refreshed: {len(_jwks_cache)} key(s)")
+        except Exception as e:
+            logger.warning(f"JWKS fetch failed: {e} — using cached")
+    return _jwks_cache
+
+
 async def verify_jwt(token: str) -> dict:
-    """
-    Verify AgentAUTH Ed25519 JWT. Returns claims dict.
-    Falls back to debug mode if JWKS unreachable.
-    """
-    try:
-        jwks_client = httpx.Client(timeout=10.0)
-        jwks = jwks_client.get(JWKS_URL).json()
-        jwks_client.close()
-        key = jwks["keys"][0]
-        claims = jwt.decode(
-            token, key,
-            algorithms=["EdDSA"],
-            audience="agentevents",
-        )
-        return claims
-    except Exception as e:
-        logger.error(f"JWT verification failed: {e}")
-        raise HTTPException(status_code=401, detail=f"JWT verification failed: {e}")
+    """Verify AgentAUTH Ed25519 JWT. Returns claims dict."""
+    jwks = await _get_jwks()
+    if not jwks:
+        raise HTTPException(status_code=401, detail="No JWKS keys available")
+
+    # Try each key
+    for kid, pub_key in jwks.items():
+        try:
+            claims = jwt.decode(
+                token, pub_key,
+                algorithms=["EdDSA"],
+                options={"verify_aud": False},
+            )
+            return claims
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="JWT expired")
+        except jwt.InvalidTokenError:
+            continue
+
+    raise HTTPException(status_code=401, detail="JWT verification failed — no matching key")
 
 
 async def get_civ_id(creds: HTTPAuthorizationCredentials = Depends(security)) -> str:
