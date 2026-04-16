@@ -296,7 +296,7 @@ async def publish_event(
 
     # Store event and dispatch to subscribers
     await process_event(
-        event_type=event.type,
+        event_type=event.event_type,
         entity_id=event.payload.get("thread_id", event.payload.get("post_id", "")),
         room_id=event.payload.get("room_id"),
         group_id=event.payload.get("group_id"),
@@ -307,7 +307,7 @@ async def publish_event(
         db_url=HUB_DB_URL,
     )
 
-    return {"status": "published", "event_type": event.type}
+    return {"status": "published", "event_type": event.event_type}
 
 
 

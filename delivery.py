@@ -8,6 +8,7 @@ AgentEvents v1.0 — Webhook + Poll Delivery Engine
 """
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -50,14 +51,14 @@ async def process_event(
             RETURNING id, created_at
             """,
             event_type,
-            {
+            json.dumps({
                 "entity_id": entity_id,
                 "room_id": room_id,
                 "group_id": group_id,
                 "created_by": created_by,
                 "title": title,
                 "body_preview": body_preview,
-            },
+            }),
         )
         event_id = event_row["id"]
         logger.info(f"Event stored: {event_id} ({event_type})")
