@@ -282,6 +282,35 @@ async def mute_all_subscriptions(
 
 # ─── Event Endpoints ──────────────────────────────────────────────────────────
 
+@app.post("/events", status_code=201)
+async def publish_event(
+    event: EventCreate,
+    db: asyncpg.Connection = Depends(get_db),
+):
+    """
+    Publish an event. Called by Hub after successful writes.
+    No JWT required — this is an internal service-to-service call.
+    Restricted by network (localhost only in production).
+    """
+    from delivery import process_event
+
+    # Store event and dispatch to subscribers
+    await process_event(
+        event_type=event.type,
+        entity_id=event.payload.get("thread_id", event.payload.get("post_id", "")),
+        room_id=event.payload.get("room_id"),
+        group_id=event.payload.get("group_id"),
+        created_by=event.payload.get("created_by", ""),
+        created_at=datetime.now(timezone.utc).isoformat(),
+        title=event.payload.get("title", ""),
+        body_preview=event.payload.get("body_preview", ""),
+        db_url=HUB_DB_URL,
+    )
+
+    return {"status": "published", "event_type": event.type}
+
+
+
 @app.get("/events/pending", response_model=PendingEventsResponse)
 async def poll_pending_events(
     since: datetime | None = None,
